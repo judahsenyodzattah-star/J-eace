@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.venv/
+ml-service/artifacts/
+ml-service/data/
+*.sqlite
+.DS_Store
