@@ -1,0 +1,29 @@
+# Local sandbox only. PostgreSQL/Redis-backed persistence and queue workers are not wired yet.
+services:
+  api:
+    build: .
+    command: npm run dev:api
+    environment:
+      API_PORT: 3001
+      JEACE_DEMO_MODE: "true"
+    ports:
+      - "3001:3001"
+    volumes:
+      - .:/workspace
+      - /workspace/node_modules
+    restart: unless-stopped
+
+  web:
+    build: .
+    command: npm run dev:web
+    environment:
+      VITE_API_PROXY_TARGET: http://api:3001
+      CHOKIDAR_USEPOLLING: "true"
+    depends_on:
+      - api
+    ports:
+      - "5173:5173"
+    volumes:
+      - .:/workspace
+      - /workspace/node_modules
+    restart: unless-stopped

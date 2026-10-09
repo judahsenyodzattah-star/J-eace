@@ -1,0 +1,274 @@
+openapi: 3.1.0
+info:
+  title: J’eace Core API
+  version: 1.0.0
+  description: >-
+    Runnable demonstrator API. The default detector is an explicitly labeled sandbox heuristic.
+    Scores are probabilistic estimates and are not proof of authorship. This document covers
+    currently implemented API routes; dashboard-local workflows are not public API endpoints.
+servers:
+  - url: http://localhost:3001
+security:
+  - ApiKey: []
+paths:
+  /health:
+    get:
+      security: []
+      summary: Core and detector health
+      responses:
+        '200':
+          description: Service is available (including demo mode)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, enum: [ok, degraded] }
+                  detector: { type: string }
+                  model_loaded: { type: boolean }
+                  demo_mode: { type: boolean }
+  /v1/analyze:
+    post:
+      summary: Evaluate one text sample and apply the active versioned policy
+      description: Text is held in request memory for inference. The in-memory demo store retains a SHA-256 content hash, not the submitted text.
+      x-rateLimit: 60 requests per minute per API key in local mode
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [text]
+              properties:
+                text: { type: string, minLength: 1, maxLength: 20000 }
+                source: { type: string, maxLength: 100 }
+                content_type: { type: string, maxLength: 100, default: text/plain }
+                locale: { type: string, maxLength: 35 }
+                author_id: { type: string, maxLength: 128, description: Accepted as optional metadata by clients; not persisted in demo mode. }
+                context: { type: object, additionalProperties: true, description: Not persisted by the demo API. }
+      responses:
+        '200':
+          description: Probabilistic detection result plus moderation decision
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AnalysisResult'
+              example:
+                id: an_c58d420a4e
+                score: 0.71
+                confidence: 0.82
+                classification: AI_LIKELY
+                model: j-eace-demo-heuristic
+                model_version: demo.1
+                latency_ms: 76
+                decision: FLAG
+                reason: AI-likelihood crossed the review threshold.
+                policy_id: pol_academic_standard
+                policy_version: 3
+                flag_threshold: 0.6
+                block_threshold: 0.85
+                review_status: PENDING
+                created_at: '2026-10-09T12:00:00Z'
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/ContentTooLarge' }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { $ref: '#/components/responses/DetectorUnavailable' }
+  /v1/documents/analyze:
+    post:
+      summary: OCR and inspect one transfer receipt image
+      description: >-
+        Accepts one JPEG/PNG image up to 5 MB. OCR and metadata are processed in memory only; no image or OCR text is persisted.
+        Expected values are trusted transaction data and must be supplied server-to-server in production. The result is not an authenticity or fraud verdict and always requires human verification.
+      x-rateLimit: 5 requests per minute per API key in local mode
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document, document_type]
+              properties:
+                document: { type: string, format: binary, description: JPEG or PNG image }
+                document_type: { type: string, enum: [transfer_receipt] }
+                expected_amount: { type: string, example: '250.00' }
+                expected_currency: { type: string, pattern: '^[A-Za-z]{3}$', example: GHS }
+                expected_reference: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: OCR estimates, limited metadata, and optional trusted-field comparison
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BankDocumentReview' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/ContentTooLarge' }
+        '415': { description: Unsupported file signature, image type, or dimensions }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: Local OCR worker could not complete the review }
+  /v1/analyses:
+    get:
+      summary: List analyses belonging to the authenticated demo application
+      parameters:
+        - in: query
+          name: limit
+          schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+        - in: query
+          name: cursor
+          schema: { type: string }
+      responses:
+        '200':
+          description: Application-scoped paginated result envelope (cursor-based, maximum 100 items per page)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data: { type: array, items: { $ref: '#/components/schemas/AnalysisResult' } }
+                  meta: { type: object, properties: { total: { type: integer }, limit: { type: integer }, next_cursor: { type: [string, 'null'] } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/analyses/{id}:
+    get:
+      summary: Get one analysis from the authenticated application
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema: { type: string }
+      responses:
+        '200': { description: Analysis details }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: Analysis not found or not visible to this application }
+  /v1/policies:
+    get:
+      summary: List current demo application policy versions
+      responses:
+        '200': { description: Policies and immutable threshold versions }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /v1/analytics:
+    get:
+      summary: Application-scoped analysis aggregates
+      responses:
+        '200': { description: Usage aggregates for the in-memory API store }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+  /openapi.json:
+    get:
+      security: []
+      summary: Machine-readable API definition for implemented routes
+      responses:
+        '200': { description: OpenAPI document }
+components:
+  securitySchemes:
+    ApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: API key
+      description: Local demo only. The local public key is jeace_local_demo_key; never use it in a deployment.
+  schemas:
+    AnalysisResult:
+      type: object
+      required: [id, score, confidence, classification, model, model_version, latency_ms, decision, policy_version]
+      properties:
+        id: { type: string }
+        score: { type: number, minimum: 0, maximum: 1, description: Estimated probability-like AI-generation score. }
+        confidence: { type: number, minimum: 0, maximum: 1, description: Model confidence estimate; not calibrated by default. }
+        classification: { type: string, enum: [AI_LIKELY, HUMAN_LIKELY] }
+        model: { type: string }
+        model_version: { type: string }
+        latency_ms: { type: integer, minimum: 0 }
+        decision: { type: string, enum: [ALLOW, FLAG, BLOCK] }
+        reason: { type: string }
+        policy_id: { type: string }
+        policy_version: { type: integer }
+        flag_threshold: { type: number, minimum: 0, maximum: 1 }
+        block_threshold: { type: number, minimum: 0, maximum: 1 }
+        review_status: { type: string, enum: [PENDING, NOT_REQUIRED] }
+        created_at: { type: string, format: date-time }
+    BankDocumentReview:
+      type: object
+      required: [id, document_type, file, metadata, ocr, extracted_fields, comparisons, comparison_status, human_review_required, forensic_assessment, review_reasons]
+      properties:
+        id: { type: string }
+        document_type: { type: string, enum: [transfer_receipt] }
+        analyzed_at: { type: string, format: date-time }
+        file:
+          type: object
+          properties:
+            media_type: { type: string, enum: [image/jpeg, image/png] }
+            size_bytes: { type: integer, maximum: 5242880 }
+            sha256: { type: string, description: File fingerprint; not anonymization. }
+            width: { type: integer }
+            height: { type: integer }
+        metadata:
+          type: object
+          properties:
+            exif_present: { type: boolean }
+            capture_time: { type: [string, 'null'] }
+            camera_make: { type: [string, 'null'] }
+            camera_model: { type: [string, 'null'] }
+            software: { type: [string, 'null'] }
+            orientation: { type: [string, number, 'null'] }
+            gps_read: { type: boolean, const: false }
+        ocr:
+          type: object
+          properties:
+            engine: { type: string, enum: [tesseract.js] }
+            language: { type: string, enum: [eng] }
+            confidence: { type: number, minimum: 0, maximum: 100 }
+            text: { type: string, description: Sensitive OCR text is returned to the caller but not persisted by the demo. }
+        extracted_fields:
+          type: object
+          properties:
+            amount: { type: [string, 'null'] }
+            currency: { type: [string, 'null'] }
+            reference: { type: [string, 'null'] }
+            date: { type: [string, 'null'] }
+        comparisons:
+          type: object
+          properties:
+            amount: { $ref: '#/components/schemas/BankFieldComparison' }
+            currency: { $ref: '#/components/schemas/BankFieldComparison' }
+            reference: { $ref: '#/components/schemas/BankFieldComparison' }
+        comparison_status: { type: string, enum: [MATCH, MISMATCH, INCOMPLETE, NOT_COMPARED] }
+        human_review_required: { type: boolean, const: true }
+        forensic_assessment: { type: string, enum: [NOT_PERFORMED] }
+        review_reasons: { type: array, items: { type: string } }
+    BankFieldComparison:
+      type: object
+      properties:
+        status: { type: string, enum: [MATCH, MISMATCH, NOT_EXTRACTED, NOT_PROVIDED] }
+        expected: { type: [string, 'null'] }
+        observed: { type: [string, 'null'] }
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          required: [code, message, request_id]
+          properties:
+            code: { type: string }
+            message: { type: string }
+            request_id: { type: string }
+  responses:
+    InvalidRequest:
+      description: Invalid or empty input
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid API key
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ContentTooLarge:
+      description: Text exceeds the maximum supported size
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    RateLimited:
+      description: Rate limit exceeded
+    DetectorUnavailable:
+      description: Configured inference service could not complete the request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
