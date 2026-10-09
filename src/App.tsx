@@ -4,6 +4,7 @@ import { Sidebar, type PageId } from './components/Sidebar';
 import { Topbar } from './components/Topbar';
 import { OverviewPage } from './components/OverviewPage';
 import { AnalyzePage } from './components/AnalyzePage';
+import { DocumentsPage } from './components/DocumentsPage';
 import { AnalysesPage } from './components/AnalysesPage';
 import { ReviewPage } from './components/ReviewPage';
 import { PoliciesPage } from './components/PoliciesPage';
@@ -114,6 +115,7 @@ function App() {
   switch (page) {
     case 'overview': view = <OverviewPage analyses={analyses} onNavigate={navigate} onSelect={setSelectedAnalysis} />; break;
     case 'analyze': view = <AnalyzePage flagThreshold={activePolicy.flagThreshold} blockThreshold={activePolicy.blockThreshold} policyName={activePolicy.name} policyId={activePolicy.id} policyVersion={activePolicy.version} onAnalyzed={handleAnalysis} onNavigate={navigate} />; break;
+    case 'documents': view = <DocumentsPage />; break;
     case 'analyses': view = <AnalysesPage analyses={analyses} query={globalQuery} onQueryChange={setGlobalQuery} onSelect={setSelectedAnalysis} />; break;
     case 'reviews': view = <ReviewPage analyses={analyses} onReview={reviewAnalysis} />; break;
     case 'policies': view = <PoliciesPage policies={policies} onSave={savePolicy} onCreate={createPolicy} />; break;

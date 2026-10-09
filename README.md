@@ -1,6 +1,6 @@
 # J’eace — AI Content Detection & Moderation Platform
 
-**Evaluation, Authenticity, Classification & Enforcement.** J’eace evaluates submitted text, returns a probabilistic AI-likelihood score, applies a versioned moderation policy, and routes decisions into a human-review workflow.
+**Evaluation, Authenticity, Classification & Enforcement.** J’eace evaluates submitted text, returns a probabilistic AI-likelihood score, and includes a separate bank transfer-receipt OCR/metadata review sandbox. Text moderation policy and document-field comparison are distinct workflows; both keep consequential decisions with a human reviewer.
 
 > **This repository is a demonstrable academic prototype, not a production detector.** The default scorer is a small deterministic heuristic so the walkthrough works without model weights. It is labeled `j-eace-demo-heuristic` everywhere and must not be used to make consequential decisions. A separate Python service and reproducible Transformer fine-tuning/evaluation pipeline are included; the trained checkpoint and a licensed dataset are intentionally not bundled. The default persistence adapter is in-memory on the API and localStorage in the dashboard. `database/schema.sql` documents the tenant-isolated PostgreSQL target.
 
@@ -27,7 +27,7 @@ The seeded workspace is clearly marked **Sandbox data**. It includes example ana
 
 ### Local API authentication
 
-Every non-health API route requires an API key. The sandbox recognizes `jeace_local_demo_key` (also accepted as `x-api-key`); it is a public demo credential, **not a secret**. The dev dashboard sends it only to its same-origin proxied API. Override it with `JEACE_DEMO_API_KEY` on the API and `VITE_JEACE_DEMO_API_KEY` on Vite (the Vite value is public by design and must not be a real secret). Set `JEACE_DEMO_MODE=false` and configure `ML_SERVICE_URL` to disable the demo heuristic; without a detector the service reports degraded health and returns 503. Production deployments must replace the demo auth with real tenant-scoped key records/JWTs before exposing the service.
+Every analysis and application-data API route requires an API key; health and the OpenAPI definition are public. The sandbox recognizes `jeace_local_demo_key` (also accepted as `x-api-key`); it is a public demo credential, **not a secret**. The dev dashboard sends it only to its same-origin proxied API. Override it with `JEACE_DEMO_API_KEY` on the API and `VITE_JEACE_DEMO_API_KEY` on Vite (the Vite value is public by design and must not be a real secret). Set `JEACE_DEMO_MODE=false` and configure `ML_SERVICE_URL` to disable the demo heuristic; without a detector the service reports degraded health and returns 503. Production deployments must replace the demo auth with real tenant-scoped key records/JWTs before exposing the service.
 
 ```bash
 curl -X POST http://localhost:3001/v1/analyze \
@@ -36,7 +36,13 @@ curl -X POST http://localhost:3001/v1/analyze \
   -d '{"text":"A few paragraphs to evaluate.","source":"assignment","locale":"en"}'
 ```
 
-Implemented API routes: `GET /health`, `POST /v1/analyze`, `GET /v1/analyses`, `GET /v1/analyses/{id}`, `GET /v1/policies`, `GET /v1/analytics`, and `GET /openapi.json`. Requests are input-limited and rate-limited. The core API stores only a content hash and metadata in its in-memory demo store, never ordinary request-body logs. Data is lost when the API process restarts.
+Implemented API routes: `GET /health`, `POST /v1/analyze`, `POST /v1/documents/analyze`, `GET /v1/analyses`, `GET /v1/analyses/{id}`, `GET /v1/policies`, `GET /v1/analytics`, and `GET /openapi.json`. Requests are input-limited and rate-limited. The text-analysis store keeps a content hash and metadata in process memory, never the submitted text; records disappear when the API restarts.
+
+### Bank transfer-receipt review (new sandbox workflow)
+
+The dashboard's **Bank documents** page accepts one JPEG/PNG transfer receipt (up to 5 MB). Fastify checks the binary image signature and dimensions, reads a limited set of EXIF tags (never GPS coordinates), and runs bundled local English OCR using Tesseract.js. It estimates amount, currency, date, and transaction reference, then can compare amount/currency/reference against optional values supplied in the multipart request. In a real integration those expected values must come from a trusted bank backend, not the customer/browser.
+
+The original image and OCR text are processed in memory and are not persisted; OCR text is returned to the active browser page for a reviewer and is not saved to localStorage. A file hash is returned as a fingerprint, not as anonymization. The page is currently transfer-receipt-only and accepts JPEG/PNG (not PDF). It is **not** a bank-core verification, fraud score, deepfake detector, or image-tampering classifier. EXIF may be absent or altered; a match is not proof of authenticity or payment, and every result requires human verification. Do not upload real customer records to this sandbox.
 
 Run checks:
 
@@ -55,8 +61,9 @@ React + Vite dashboard ──same-origin /api proxy──> Fastify core API
                                                       ├── DetectorAdapter
                                                       │     ├── sandbox heuristic (default)
                                                       │     └── HTTP adapter → Python inference service (optional)
-                                                      ├── deterministic policy engine
-                                                      └── in-memory demonstrator store
+                                                      ├── deterministic text policy engine
+                                                      ├── JPEG/PNG receipt OCR + limited EXIF metadata
+                                                      └── in-memory text demonstrator store
 
 PostgreSQL tenant/RLS schema and academic model-training pipeline are supplied separately.
 ```
@@ -105,12 +112,12 @@ The ML service is a genuine in-repository training/inference component, but **no
 
 ## Privacy and responsible use
 
-A score is an estimate, not proof of authorship. Short texts, genre, second-language writing, unusual styles, paraphrasing, human editing, and generators absent from the training data can produce false positives or negatives. Use human review and an appeal path, minimize collection, apply retention limits, and keep content out of logs. A text hash may still be linkable to its source and is not equivalent to anonymization.
+A text score is an estimate, not proof of authorship. Short texts, genre, second-language writing, unusual styles, paraphrasing, human editing, and generators absent from the training data can produce false positives or negatives. Use human review and an appeal path, minimize collection, apply retention limits, and keep content out of logs. A text or image hash may still be linkable to its source and is not equivalent to anonymization. Bank receipts and OCR text can expose financial or personal data; the sandbox is for synthetic/redacted examples only. EXIF is user-controlled, may be stripped or modified, and is not reliable proof of capture time or authenticity.
 
 ## Project contents
 
-- `src/` — responsive React dashboard and sandbox workflow.
-- `server/src/` — Fastify API, detector adapter/resilience, API-key demo gate, policy engine, hash-only in-memory store.
+- `src/` — responsive React dashboard, text analysis, and non-persistent bank receipt review page.
+- `server/src/` — Fastify API, detector adapter/resilience, API-key demo gate, text policy engine, bounded JPEG/PNG OCR and metadata inspection, hash-only in-memory text store.
 - `ml-service/` — FastAPI inference service, Transformer training pipeline, grouped split utility, evaluation metrics.
 - `database/schema.sql` — PostgreSQL tenant isolation, RLS policies, immutable audit trail, review, retention, and usage schema.
 - `docs/` — API reference, system boundaries, and model card.

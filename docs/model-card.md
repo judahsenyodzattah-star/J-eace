@@ -8,6 +8,8 @@
 
 Research and demonstration of a probabilistic human-vs-AI text classification component inside a moderation workflow. Outputs are intended to help prioritize human review, not to establish authorship or make a disciplinary decision on their own.
 
+This model card covers **text only**. The separate bank transfer-receipt sandbox uses English OCR and metadata extraction; it has no image-authenticity or tamper-detection model, and no bank-document OCR performance study or fraud metrics are claimed.
+
 ## Out-of-scope use
 
 - Definitive authorship, plagiarism, fraud, or misconduct determinations.

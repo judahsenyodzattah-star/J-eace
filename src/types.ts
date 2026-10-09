@@ -77,3 +77,27 @@ export interface AnalyzeResult {
   reviewStatus: ReviewStatus;
   signals?: Array<{ label: string; value: string; description: string }>;
 }
+
+export type DocumentComparisonState = 'MATCH' | 'MISMATCH' | 'NOT_EXTRACTED' | 'NOT_PROVIDED';
+export type DocumentComparisonStatus = 'MATCH' | 'MISMATCH' | 'INCOMPLETE' | 'NOT_COMPARED';
+
+export interface DocumentFieldComparison {
+  status: DocumentComparisonState;
+  expected: string | null;
+  observed: string | null;
+}
+
+export interface BankDocumentAnalysis {
+  id: string;
+  documentType: 'transfer_receipt';
+  analyzedAt: string;
+  file: { mediaType: 'image/jpeg' | 'image/png'; sizeBytes: number; sha256: string; width: number; height: number };
+  metadata: { exifPresent: boolean; captureTime: string | null; cameraMake: string | null; cameraModel: string | null; software: string | null; orientation: string | number | null; gpsRead: false };
+  ocr: { engine: 'tesseract.js'; language: 'eng'; confidence: number; text: string };
+  extractedFields: { amount: string | null; currency: string | null; reference: string | null; date: string | null };
+  comparisons: { amount: DocumentFieldComparison; currency: DocumentFieldComparison; reference: DocumentFieldComparison };
+  comparisonStatus: DocumentComparisonStatus;
+  humanReviewRequired: true;
+  forensicAssessment: 'NOT_PERFORMED';
+  reviewReasons: string[];
+}

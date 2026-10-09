@@ -1,17 +1,18 @@
 import {
-  Activity, Aperture, BarChart3, BookOpenText, Boxes, ChevronDown,
+  Activity, Aperture, BarChart3, BookOpenText, Boxes, ChevronDown, FileCheck2,
   ClipboardList, FileSearch2, Fingerprint, Gauge, LifeBuoy,
   ScrollText, Settings2, ShieldCheck,
 } from 'lucide-react';
 import { Logo } from './Logo';
 
-export type PageId = 'overview' | 'analyze' | 'analyses' | 'reviews' | 'policies' | 'applications' | 'analytics' | 'audit' | 'docs';
+export type PageId = 'overview' | 'analyze' | 'analyses' | 'reviews' | 'documents' | 'policies' | 'applications' | 'analytics' | 'audit' | 'docs';
 
 const workspaceItems = [
   { id: 'overview', label: 'Overview', icon: Gauge },
   { id: 'analyze', label: 'New analysis', icon: Aperture },
   { id: 'analyses', label: 'Analyses', icon: FileSearch2, count: '2.8k' },
   { id: 'reviews', label: 'Review queue', icon: ClipboardList, count: '12', countTone: 'hot' },
+  { id: 'documents', label: 'Bank documents', icon: FileCheck2 },
 ];
 const governanceItems = [
   { id: 'policies', label: 'Policies', icon: Fingerprint },

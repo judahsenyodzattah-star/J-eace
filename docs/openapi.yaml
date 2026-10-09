@@ -74,6 +74,38 @@ paths:
         '413': { $ref: '#/components/responses/ContentTooLarge' }
         '429': { $ref: '#/components/responses/RateLimited' }
         '503': { $ref: '#/components/responses/DetectorUnavailable' }
+  /v1/documents/analyze:
+    post:
+      summary: OCR and inspect one transfer receipt image
+      description: >-
+        Accepts one JPEG/PNG image up to 5 MB. OCR and metadata are processed in memory only; no image or OCR text is persisted.
+        Expected values are trusted transaction data and must be supplied server-to-server in production. The result is not an authenticity or fraud verdict and always requires human verification.
+      x-rateLimit: 5 requests per minute per API key in local mode
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [document, document_type]
+              properties:
+                document: { type: string, format: binary, description: JPEG or PNG image }
+                document_type: { type: string, enum: [transfer_receipt] }
+                expected_amount: { type: string, example: '250.00' }
+                expected_currency: { type: string, pattern: '^[A-Za-z]{3}$', example: GHS }
+                expected_reference: { type: string, maxLength: 100 }
+      responses:
+        '200':
+          description: OCR estimates, limited metadata, and optional trusted-field comparison
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/BankDocumentReview' }
+        '400': { $ref: '#/components/responses/InvalidRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '413': { $ref: '#/components/responses/ContentTooLarge' }
+        '415': { description: Unsupported file signature, image type, or dimensions }
+        '429': { $ref: '#/components/responses/RateLimited' }
+        '503': { description: Local OCR worker could not complete the review }
   /v1/analyses:
     get:
       summary: List analyses belonging to the authenticated demo application
@@ -152,6 +184,61 @@ components:
         block_threshold: { type: number, minimum: 0, maximum: 1 }
         review_status: { type: string, enum: [PENDING, NOT_REQUIRED] }
         created_at: { type: string, format: date-time }
+    BankDocumentReview:
+      type: object
+      required: [id, document_type, file, metadata, ocr, extracted_fields, comparisons, comparison_status, human_review_required, forensic_assessment, review_reasons]
+      properties:
+        id: { type: string }
+        document_type: { type: string, enum: [transfer_receipt] }
+        analyzed_at: { type: string, format: date-time }
+        file:
+          type: object
+          properties:
+            media_type: { type: string, enum: [image/jpeg, image/png] }
+            size_bytes: { type: integer, maximum: 5242880 }
+            sha256: { type: string, description: File fingerprint; not anonymization. }
+            width: { type: integer }
+            height: { type: integer }
+        metadata:
+          type: object
+          properties:
+            exif_present: { type: boolean }
+            capture_time: { type: [string, 'null'] }
+            camera_make: { type: [string, 'null'] }
+            camera_model: { type: [string, 'null'] }
+            software: { type: [string, 'null'] }
+            orientation: { type: [string, number, 'null'] }
+            gps_read: { type: boolean, const: false }
+        ocr:
+          type: object
+          properties:
+            engine: { type: string, enum: [tesseract.js] }
+            language: { type: string, enum: [eng] }
+            confidence: { type: number, minimum: 0, maximum: 100 }
+            text: { type: string, description: Sensitive OCR text is returned to the caller but not persisted by the demo. }
+        extracted_fields:
+          type: object
+          properties:
+            amount: { type: [string, 'null'] }
+            currency: { type: [string, 'null'] }
+            reference: { type: [string, 'null'] }
+            date: { type: [string, 'null'] }
+        comparisons:
+          type: object
+          properties:
+            amount: { $ref: '#/components/schemas/BankFieldComparison' }
+            currency: { $ref: '#/components/schemas/BankFieldComparison' }
+            reference: { $ref: '#/components/schemas/BankFieldComparison' }
+        comparison_status: { type: string, enum: [MATCH, MISMATCH, INCOMPLETE, NOT_COMPARED] }
+        human_review_required: { type: boolean, const: true }
+        forensic_assessment: { type: string, enum: [NOT_PERFORMED] }
+        review_reasons: { type: array, items: { type: string } }
+    BankFieldComparison:
+      type: object
+      properties:
+        status: { type: string, enum: [MATCH, MISMATCH, NOT_EXTRACTED, NOT_PROVIDED] }
+        expected: { type: [string, 'null'] }
+        observed: { type: [string, 'null'] }
     Error:
       type: object
       properties:

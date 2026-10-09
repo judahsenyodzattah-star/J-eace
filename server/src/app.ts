@@ -3,8 +3,11 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
 import { createDetector, DetectorUnavailableError } from './detector.js';
 import type { DetectorAdapter, DetectorOutput } from './detector.js';
+import { analyzeBankDocument, closeDocumentOcr, inspectImage, InvalidDocumentImageError, MAX_DOCUMENT_BYTES } from './documents.js';
+import type { BankDocumentAnalyzer, ExpectedTransaction } from './documents.js';
 import { DemoStore, sha256 } from './store.js';
 import type { Decision } from './policy.js';
 
@@ -13,6 +16,7 @@ interface BuildServerOptions {
   detector?: DetectorAdapter;
   demoMode?: boolean;
   apiKey?: string;
+  documentAnalyzer?: BankDocumentAnalyzer;
   quiet?: boolean;
 }
 
@@ -33,10 +37,16 @@ export async function buildServer(options: BuildServerOptions = {}) {
   const detector = options.detector ?? createDetector();
   const demoMode = options.demoMode ?? process.env.JEACE_DEMO_MODE !== 'false';
   const apiKeyHash = sha256(options.apiKey ?? process.env.JEACE_DEMO_API_KEY ?? 'jeace_local_demo_key');
+  const documentAnalyzer = options.documentAnalyzer ?? analyzeBankDocument;
   const cache = new Map<string, CacheItem>();
 
   await app.register(helmet, { contentSecurityPolicy: false });
   await app.register(cors, { origin: true, credentials: false });
+  await app.register(multipart, {
+    limits: { fileSize: MAX_DOCUMENT_BYTES, files: 1, fields: 4, parts: 5, fieldSize: 256 },
+    throwFileSizeLimit: true,
+  });
+  app.addHook('onClose', async () => { await closeDocumentOcr(); });
   await app.register(rateLimit, {
     max: 60,
     timeWindow: '1 minute',
@@ -142,6 +152,91 @@ export async function buildServer(options: BuildServerOptions = {}) {
     return reply.code(200).send(analysisResponse(analysis));
   });
 
+  app.post('/v1/documents/analyze', { config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
+    if (!requireApiKey(request, reply)) return;
+    if (!request.isMultipart()) return error(reply, 400, 'INVALID_REQUEST', 'Upload the document as multipart form data.', request.id);
+
+    const fields: Record<string, string> = {};
+    let image: Buffer | undefined;
+    try {
+      for await (const part of request.parts()) {
+        if (part.type === 'file') {
+          if (part.fieldname !== 'document' || image) return error(reply, 400, 'INVALID_REQUEST', 'Provide exactly one file in the document field.', request.id);
+          image = await part.toBuffer();
+        } else {
+          if (part.valueTruncated) return error(reply, 413, 'CONTENT_TOO_LARGE', 'A form field exceeds the configured size limit.', request.id);
+          if (!['document_type', 'expected_amount', 'expected_currency', 'expected_reference'].includes(part.fieldname)) {
+            return error(reply, 400, 'INVALID_REQUEST', 'The request contains an unsupported form field.', request.id);
+          }
+          if (fields[part.fieldname] !== undefined) return error(reply, 400, 'INVALID_REQUEST', 'Form fields must not be repeated.', request.id);
+          fields[part.fieldname] = String(part.value).trim();
+        }
+      }
+    } catch (cause) {
+      const statusCode = typeof cause === 'object' && cause !== null && 'statusCode' in cause ? Number(cause.statusCode) : 0;
+      if (statusCode === 413) return error(reply, 413, 'CONTENT_TOO_LARGE', `Document images must be no larger than ${MAX_DOCUMENT_BYTES / (1024 * 1024)} MB.`, request.id);
+      return error(reply, 400, 'INVALID_REQUEST', 'The multipart upload could not be read.', request.id);
+    }
+
+    if (!image) return error(reply, 400, 'INVALID_REQUEST', 'A document image is required.', request.id);
+    if (fields.document_type !== 'transfer_receipt') return error(reply, 400, 'INVALID_REQUEST', 'This prototype currently supports transfer receipts and payment confirmations only.', request.id);
+
+    const amount = fields.expected_amount || undefined;
+    const currency = fields.expected_currency?.toUpperCase() || undefined;
+    const reference = fields.expected_reference || undefined;
+    if (amount && !/^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?$/.test(amount)) {
+      return error(reply, 400, 'INVALID_REQUEST', 'Expected amount must be a number with up to two decimal places.', request.id);
+    }
+    if (currency && !amount) return error(reply, 400, 'INVALID_REQUEST', 'Expected currency must be supplied together with expected amount.', request.id);
+    if (currency && !/^[A-Z]{3}$/.test(currency)) return error(reply, 400, 'INVALID_REQUEST', 'Expected currency must be a three-letter currency code.', request.id);
+    if (reference && reference.length > 100) return error(reply, 400, 'INVALID_REQUEST', 'Expected reference must not exceed 100 characters.', request.id);
+
+    let inspection;
+    try {
+      inspection = inspectImage(image);
+    } catch (cause) {
+      const message = cause instanceof InvalidDocumentImageError ? cause.message : 'The uploaded image is invalid.';
+      return error(reply, 415, 'UNSUPPORTED_MEDIA_TYPE', message, request.id);
+    }
+
+    const expected: ExpectedTransaction = { amount, currency, reference };
+    try {
+      const result = await documentAnalyzer({ buffer: image, inspection, expected });
+      reply.header('cache-control', 'no-store, private');
+      return reply.send({
+        id: result.id,
+        document_type: result.documentType,
+        analyzed_at: result.analyzedAt,
+        file: {
+          media_type: result.file.mediaType,
+          size_bytes: result.file.sizeBytes,
+          sha256: result.file.sha256,
+          width: result.file.width,
+          height: result.file.height,
+        },
+        metadata: {
+          exif_present: result.metadata.exifPresent,
+          capture_time: result.metadata.captureTime,
+          camera_make: result.metadata.cameraMake,
+          camera_model: result.metadata.cameraModel,
+          software: result.metadata.software,
+          orientation: result.metadata.orientation,
+          gps_read: result.metadata.gpsRead,
+        },
+        ocr: result.ocr,
+        extracted_fields: result.extractedFields,
+        comparisons: result.comparisons,
+        comparison_status: result.comparisonStatus,
+        human_review_required: result.humanReviewRequired,
+        forensic_assessment: result.forensicAssessment,
+        review_reasons: result.reviewReasons,
+      });
+    } catch (cause) {
+      request.log.error({ error_name: cause instanceof Error ? cause.name : 'UnknownError' }, 'Bank document analysis failed');
+      return error(reply, 503, 'DOCUMENT_ANALYSIS_UNAVAILABLE', 'OCR could not complete this document review. No image was retained; retry with a clear JPEG or PNG.', request.id);
+    }
+  });
+
   app.get<{ Querystring: { limit?: string; cursor?: string } }>('/v1/analyses', async (request, reply) => {
     if (!requireApiKey(request, reply)) return;
     const rows = store.listAnalyses();
@@ -176,7 +271,7 @@ export async function buildServer(options: BuildServerOptions = {}) {
     return reply.send({ total_analyses: rows.length, decisions: counts, average_latency_ms: averageLatency, retention_mode: 'HASH_ONLY', sample_data: false });
   });
 
-  app.get('/openapi.json', async (_request, reply) => reply.send({ openapi: '3.1.0', info: { title: 'J’eace Core API', version: '1.0.0' }, servers: [{ url: '/v1' }], paths: { '/analyze': { post: { summary: 'Analyze content', security: [{ ApiKeyAuth: [] }], responses: { '200': { description: 'Probabilistic detection result and policy decision' }, '400': { description: 'Invalid request' }, '401': { description: 'Unauthorized' }, '429': { description: 'Rate limited' }, '503': { description: 'Detector unavailable' } } } }, '/analyses': { get: { summary: 'List application analyses' } }, '/analyses/{id}': { get: { summary: 'Get analysis by id' } }, '/policies': { get: { summary: 'List application policies' } }, '/analytics': { get: { summary: 'Usage and decision aggregates' } } }, components: { securitySchemes: { ApiKeyAuth: { type: 'http', scheme: 'bearer' } } } }));
+  app.get('/openapi.json', async (_request, reply) => reply.send({ openapi: '3.1.0', info: { title: 'J’eace Core API', version: '1.0.0' }, servers: [{ url: '/v1' }], paths: { '/analyze': { post: { summary: 'Analyze content', security: [{ ApiKeyAuth: [] }], responses: { '200': { description: 'Probabilistic detection result and policy decision' }, '400': { description: 'Invalid request' }, '401': { description: 'Unauthorized' }, '429': { description: 'Rate limited' }, '503': { description: 'Detector unavailable' } } } }, '/documents/analyze': { post: { summary: 'OCR and inspect one JPEG/PNG transfer receipt', security: [{ ApiKeyAuth: [] }], requestBody: { required: true, content: { 'multipart/form-data': { schema: { type: 'object', required: ['document', 'document_type'] } } } }, responses: { '200': { description: 'OCR estimates, limited EXIF metadata, and optional field comparison; always requires human review' }, '400': { description: 'Invalid multipart form or expected fields' }, '401': { description: 'Unauthorized' }, '413': { description: 'Upload exceeds the size limit' }, '415': { description: 'Unsupported image signature or dimensions' }, '429': { description: 'Rate limited' }, '503': { description: 'OCR unavailable' } } } }, '/analyses': { get: { summary: 'List application analyses' } }, '/analyses/{id}': { get: { summary: 'Get analysis by id' } }, '/policies': { get: { summary: 'List application policies' } }, '/analytics': { get: { summary: 'Usage and decision aggregates' } } }, components: { securitySchemes: { ApiKeyAuth: { type: 'http', scheme: 'bearer' } } } }));
 
   app.setNotFoundHandler((request, reply) => error(reply, 404, 'NOT_FOUND', 'The requested endpoint does not exist.', request.id));
   app.setErrorHandler((cause, request, reply) => {

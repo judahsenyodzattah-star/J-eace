@@ -2,7 +2,7 @@ import { Bell, ChevronDown, CircleHelp, Command, Menu, Search, Sparkles } from '
 import type { PageId } from './Sidebar';
 
 const titles: Record<PageId, string> = {
-  overview: 'Overview', analyze: 'New analysis', analyses: 'Analyses', reviews: 'Review queue', policies: 'Policies', applications: 'Applications', analytics: 'Analytics', audit: 'Audit log', docs: 'Developer docs',
+  overview: 'Overview', analyze: 'New analysis', analyses: 'Analyses', reviews: 'Review queue', documents: 'Bank documents', policies: 'Policies', applications: 'Applications', analytics: 'Analytics', audit: 'Audit log', docs: 'Developer docs',
 };
 
 interface Props {
